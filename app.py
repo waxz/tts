@@ -56,46 +56,81 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(se
 # 2. Text & Audio Utilities
 # -----------------------------------------------------------------------------
 
-def preprocess_text(text: str) -> str:
-    if not text: return ""
-    text = re.sub(r'\*.*?\*', '', text) # Remove actions
-    # Remove Emojis/Symbols (Fixed SyntaxError from before)
-    text = re.sub(r"[^\w\s,.:;?!'\"\-\u00C0-\u00FF]", '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+def split_text_into_sentences(text: str, min_chunk_size: int = 150):
+    """
+    Smart splitting for low-latency streaming.
+    
+    Logic:
+    1. Split text into "atomic" sentences (preserving punctuation).
+    2. ALWAYS yield the first sentence immediately (fastest time-to-first-byte).
+    3. For subsequent text, combine small sentences into larger chunks 
+       (up to min_chunk_size) to improve GPU efficiency and sentence flow.
+    """
+    if not text:
+        return []
 
-def split_text_into_sentences(text: str):
-    parts = re.split(r'([.?!]+)', text)
-    sentences = []
-    current = ""
-    for part in parts:
-        current += part
-        if re.search(r'[.?!]', part):
-            if current.strip(): sentences.append(current.strip())
-            current = ""
-    if current.strip(): sentences.append(current.strip())
-    return sentences
+    # 1. Clean up extra whitespace (newlines become spaces for flow)
+    # We want a continuous stream of text for better merging
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # 2. Split into atomic sentences
+    # Pattern: Split by [.?!:;] but keep the delimiter.
+    # We look for punctuation followed by a space or end of string.
+    raw_parts = re.split(r'([.?!:;]+)(?=\s|$)', text)
+    
+    atomic_sentences = []
+    current_atomic = ""
+    
+    # Re-assemble the split parts (e.g. "Hello" + "." -> "Hello.")
+    for part in raw_parts:
+        if re.match(r'^[.?!:;]+$', part):
+            current_atomic += part
+            if current_atomic.strip():
+                atomic_sentences.append(current_atomic.strip())
+            current_atomic = ""
+        else:
+            current_atomic += part
+            
+    if current_atomic.strip():
+        atomic_sentences.append(current_atomic.strip())
+
+    # 3. Batching Logic
+    final_chunks = []
+    current_buffer = ""
+    first_sentence_sent = False
+
+    for sentence in atomic_sentences:
+        # CASE A: The very first sentence. 
+        # Send it immediately, no matter how short, to start audio playback.
+        if not first_sentence_sent:
+            final_chunks.append(sentence)
+            first_sentence_sent = True
+            continue
+
+        # CASE B: Subsequent sentences.
+        # Add to buffer.
+        if current_buffer:
+            current_buffer += " " + sentence
+        else:
+            current_buffer = sentence
+
+        # If buffer is long enough, flush it.
+        # This prevents generating audio for tiny fragments like "No." or "Ok."
+        if len(current_buffer) >= min_chunk_size:
+            final_chunks.append(current_buffer)
+            current_buffer = ""
+
+    # Flush any remaining text in the buffer
+    if current_buffer:
+        final_chunks.append(current_buffer)
+
+    return final_chunks
+
 
 # -----------------------------------------------------------------------------
 # 1. Utility Functions
 # -----------------------------------------------------------------------------
 
-def split_text_into_sentences2(text: str):
-    """
-    Splits text into chunks (sentences) for streaming.
-    """
-    parts = re.split(r'([.?!]+)', text)
-    sentences = []
-    current = ""
-    for part in parts:
-        current += part
-        if re.search(r'[.?!]', part):
-            if current.strip():
-                sentences.append(current.strip())
-            current = ""
-    if current.strip():
-        sentences.append(current.strip())
-    return sentences
 
 def create_wav_header(sample_rate: int, channels: int = 1, bits_per_sample: int = 16):
     """
@@ -199,7 +234,12 @@ class StreamingEngine:
 
         yield create_wav_header(self.sample_rate)
 
-        chunks = split_text_into_sentences(text)
+        #chunks = split_text_into_sentences(text)
+        chunks = split_text_into_sentences(text, min_chunk_size=150)
+
+
+
+
         print(f"Streaming '{text[:20]}...' using voice: {resolved_name}")
         
         loop = asyncio.get_event_loop()

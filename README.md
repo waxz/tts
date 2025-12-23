@@ -20,6 +20,7 @@ uv pip install -r ./requirements.txt
 ## run server
 
 ```bash
+export API_KEY=yourapi
 python app.py
 ```
 
