@@ -20,13 +20,13 @@ uv pip install -r ./requirements.txt
 ## run server
 
 ```bash
-python server.py
+python app.py
 ```
 
 ## run client
 
 ```bash
-curl http://localhost:8000/v1/audio/speech   -H "Content-Type: application/json"   -d '{
+curl http://localhost:8000/v1/audio/speech   -H "Content-Type: application/json"  -H "Authorization: Bearer yourapi"  -d '{
     "model": "tts-1",
     "input": "Hello, this is Supertonic running locally!",
     "voice": "F1"

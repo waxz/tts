@@ -8,18 +8,79 @@ import argparse
 import uvicorn
 import sys
 import struct
+import secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, Literal
 from supertonic import TTS
 
+
+
+
+# -----------------------------------------------------------------------------
+# 1. Authentication Logic
+# -----------------------------------------------------------------------------
+
+# Standard Bearer token scheme (used by OpenAI clients)
+security = HTTPBearer()
+
+async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """
+    Verifies that the Bearer token sent by the client matches the API_KEY env var.
+    """
+    server_key = os.getenv("API_KEY")
+    
+    # If no key is set on the server, we can either:
+    # A) Block everything (Safe default)
+    # B) Allow everything (Dev mode)
+    # Let's Allow everything but print a warning if no key is configured.
+    if not server_key:
+        # print("WARNING: No API_KEY set. Allowing unauthenticated request.")
+        return True
+
+    client_key = credentials.credentials
+    
+    # Secure string comparison to prevent timing attacks
+    if not secrets.compare_digest(server_key, client_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return True
+
+# -----------------------------------------------------------------------------
+# 2. Text & Audio Utilities
+# -----------------------------------------------------------------------------
+
+def preprocess_text(text: str) -> str:
+    if not text: return ""
+    text = re.sub(r'\*.*?\*', '', text) # Remove actions
+    # Remove Emojis/Symbols (Fixed SyntaxError from before)
+    text = re.sub(r"[^\w\s,.:;?!'\"\-\u00C0-\u00FF]", '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def split_text_into_sentences(text: str):
+    parts = re.split(r'([.?!]+)', text)
+    sentences = []
+    current = ""
+    for part in parts:
+        current += part
+        if re.search(r'[.?!]', part):
+            if current.strip(): sentences.append(current.strip())
+            current = ""
+    if current.strip(): sentences.append(current.strip())
+    return sentences
+
 # -----------------------------------------------------------------------------
 # 1. Utility Functions
 # -----------------------------------------------------------------------------
 
-def split_text_into_sentences(text: str):
+def split_text_into_sentences2(text: str):
     """
     Splits text into chunks (sentences) for streaming.
     """
@@ -74,10 +135,9 @@ def float_to_pcm16(audio_array):
 # -----------------------------------------------------------------------------
 
 class StreamingEngine:
-    def __init__(self, onnx_dir: str, voice_dir: str):
-        self.onnx_dir = onnx_dir
+    def __init__(self):
         self.model = None
-        self.sample_rate = 24000
+        self.sample_rate = 441000
         self.lock = asyncio.Lock()
         
         # Default fallback voice
@@ -171,16 +231,26 @@ class SpeechRequest(BaseModel):
     response_format: Optional[str] = "wav"
     speed: Optional[float] = 1.0
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
-    engine = StreamingEngine("assets/onnx", "assets/voice_styles")
+    # Check if API Key is set
+    if not os.getenv("API_KEY"):
+        print("\n!!! WARNING: API_KEY not set. API is open to the public. !!!\n")
+    else:
+        print(f"\n*** Secure Mode: API Key protection enabled. ***\n")
+        
+    engine = StreamingEngine()
     yield
-    print("Engine shutting down")
+
 
 app = FastAPI(lifespan=lifespan)
 
-@app.post("/v1/audio/speech")
+
+# PROTECTED ROUTE
+# The Depends(verify_api_key) enforces auth for this specific endpoint
+@app.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
 async def text_to_speech(request: SpeechRequest):
     global engine
     if not engine:
