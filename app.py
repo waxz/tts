@@ -190,8 +190,9 @@ class StreamingEngine:
 
         print(f"Loading Supertonic model...")
         try:
-            self.model = TTS(auto_download=True)
-            self.sample_rate = self.model.sample_rate
+            self.tts = TTS(auto_download=True)
+            self.text_processor = self.tts.model.text_processor
+            self.sample_rate = self.tts.sample_rate
             print(f"Model Loaded. Rate: {self.sample_rate}")
         except Exception as e:
             print(f"Error initializing model: {e}")
@@ -211,13 +212,13 @@ class StreamingEngine:
         # 2. Try to get style
         try:
             # Note: We rely on supertonic throwing an error if name is invalid
-            style = self.model.get_voice_style(voice_name=target_name)
+            style = self.tts.get_voice_style(voice_name=target_name)
             return style, target_name
         except Exception:
             # 3. Fallback
             print(f"WARNING: Voice '{voice_name}' (mapped to '{target_name}') not found. Using '{self.default_voice}'.")
             try:
-                style = self.model.get_voice_style(voice_name=self.default_voice)
+                style = self.tts.get_voice_style(voice_name=self.default_voice)
                 return style, self.default_voice
             except Exception as e:
                 print(f"CRITICAL: Default voice '{self.default_voice}' also failed.")
@@ -234,6 +235,21 @@ class StreamingEngine:
 
         yield create_wav_header(self.sample_rate)
 
+
+        is_valid, unsupported = self.text_processor.validate_text(text)
+
+        if not is_valid:
+            print(f"   ⚠️  Contains {len(unsupported)} unsupported character(s): {unsupported[:5]}")
+            pattern = f"[{re.escape(''.join(unsupported))}]"
+            preprocessed = re.sub(pattern, "", text) #self.text_processor._preprocess_text(text)
+            if preprocessed != text:
+                print(f"   After preprocessing: {preprocessed[:50]}...")
+                text = preprocessed
+
+        else:
+            print("   ✓ All characters supported")
+
+
         #chunks = split_text_into_sentences(text)
         chunks = split_text_into_sentences(text, min_chunk_size=150)
 
@@ -249,7 +265,7 @@ class StreamingEngine:
             async with self.lock:
                 audio_float, _ = await loop.run_in_executor(
                     None, 
-                    self.model.synthesize,
+                    self.tts.synthesize,
                     chunk,
                     style
                     # speed # Add speed here if your supertonic version supports it
