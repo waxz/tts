@@ -3,7 +3,7 @@ import re
 import struct
 import lameenc
 
-def split_text_into_sentences(text: str, min_chunk_size: int = 150):
+def split_text_into_sentences(text: str, min_chunk_size: int = 150,split_pattern = r'\n+'):
     if not text:
         return []
 
@@ -17,6 +17,8 @@ def split_text_into_sentences(text: str, min_chunk_size: int = 150):
     current_atomic = ""
     
     for part in raw_parts:
+        if not part.strip():
+            continue
         if re.match(r'^[.?!:;]+$', part):
             current_atomic += part
             if current_atomic.strip():

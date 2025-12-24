@@ -3,6 +3,7 @@ import re
 import asyncio
 from kokoro import KPipeline
 import base_model
+import utils
 
 class StreamingEngine(base_model.BaseEngine):
     def __init__(self, name):
@@ -43,24 +44,9 @@ class StreamingEngine(base_model.BaseEngine):
 
     def preprocess_text(self, text):
         if not text:
-            return ""
-
-        is_valid, unsupported = True, []
-        if not is_valid:
-            print(f"   ⚠️  Contains {len(unsupported)} unsupported character(s): {unsupported[:5]}")
-            # Escape characters safe for regex usage
-            pattern = f"[{re.escape(''.join(unsupported))}]"
-            preprocessed = re.sub(pattern, "", text)
-            
-            if preprocessed != text:
-                print(f"   After preprocessing: {preprocessed[:50]}...")
-                text = preprocessed
-        else:
-            # Optional: Comment this out in production to reduce log spam
-            print("   ✓ All characters supported")
-            
-        return text
-
+            return []
+        return [text]
+        
     def generate(self, chunks: str, voice_name: str, speed: float):
         """
         Generates audio.

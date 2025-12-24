@@ -44,8 +44,8 @@ class BaseEngine:
         except NotImplementedError:
             pass 
 
-        text = self.preprocess_text(text)
-        chunks = utils.split_text_into_sentences(text, min_chunk_size=150)
+        chunks = self.preprocess_text(text)
+        
         
         loop = asyncio.get_event_loop()
         

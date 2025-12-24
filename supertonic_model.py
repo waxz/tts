@@ -3,7 +3,7 @@ import re
 import asyncio
 from supertonic import TTS
 import base_model
-
+import utils
 class StreamingEngine(base_model.BaseEngine):
     def __init__(self, name):
         # 1. Initialize configuration variables first
@@ -56,7 +56,10 @@ class StreamingEngine(base_model.BaseEngine):
 
     def preprocess_text(self, text):
         if not text:
-            return ""
+            return []
+        
+        split_pattern = r'\n+'
+
 
         is_valid, unsupported = self.text_processor.validate_text(text)
 
@@ -73,7 +76,8 @@ class StreamingEngine(base_model.BaseEngine):
             # Optional: Comment this out in production to reduce log spam
             print("   ✓ All characters supported")
             
-        return text
+        chunks = utils.split_text_into_sentences(text, min_chunk_size=150)
+        return chunks
 
     def generate(self, chunks: str, voice_name: str, speed: float):
         """
