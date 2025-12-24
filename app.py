@@ -1,43 +1,57 @@
 import os
-import argparse
 import uvicorn
 import sys
 import secrets
 import json
+import logging
 from contextlib import asynccontextmanager
+from typing import Optional, Dict
+
 from fastapi import FastAPI, HTTPException, Security, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from typing import Optional, Literal
-import supertonic_model,kokoro_model
 
-
+# Import your model engines
+import supertonic_model
+import kokoro_model
 
 # -----------------------------------------------------------------------------
-# 1. Authentication Logic
+# Setup Logging
+# -----------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# Configuration
 # -----------------------------------------------------------------------------
 
-# Standard Bearer token scheme (used by OpenAI clients)
+# Map config names to Model Classes
+MODEL_FACTORIES = {
+    "supertonic": supertonic_model.StreamingEngine,
+    "kokoro": kokoro_model.StreamingEngine
+}
+
+# Global storage for loaded engines
+engines: Dict[str, object] = {}
+
+# -----------------------------------------------------------------------------
+# Authentication
+# -----------------------------------------------------------------------------
 security = HTTPBearer()
 
 async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """
-    Verifies that the Bearer token sent by the client matches the API_KEY env var.
-    """
     server_key = os.getenv("API_KEY")
     
-    # If no key is set on the server, we can either:
-    # A) Block everything (Safe default)
-    # B) Allow everything (Dev mode)
-    # Let's Allow everything but print a warning if no key is configured.
     if not server_key:
-        # print("WARNING: No API_KEY set. Allowing unauthenticated request.")
+        # Warning already logged in lifespan, safe to pass here for dev mode
         return True
 
     client_key = credentials.credentials
-    
-    # Secure string comparison to prevent timing attacks
     if not secrets.compare_digest(server_key, client_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -47,100 +61,140 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(se
     return True
 
 # -----------------------------------------------------------------------------
-# 2. Text & Audio Utilities
+# Data Models
 # -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# 2. Streaming Engine with Fallback Logic
-# -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# 3. API Setup
-# -----------------------------------------------------------------------------
-
-engine = {}
-
 class SpeechRequest(BaseModel):
     model: Optional[str] = "tts-1"
     input: str
-    voice: str = "alloy" # Default 'alloy'
-    format: Optional[str] = "wav"
+    voice: str = "alloy"
+    format: Optional[str] = "mp3" # OpenAI defaults to mp3 usually
     speed: Optional[float] = 1.0
 
-
+# -----------------------------------------------------------------------------
+# Lifecycle (Startup/Shutdown)
+# -----------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine
-    # Check if API Key is set
+    global engines
+
+    # 1. API Key Check
     if not os.getenv("API_KEY"):
-        print("\n!!! WARNING: API_KEY not set. API is open to the public. !!!\n")
+        logger.warning("API_KEY not set. API is open to the public.")
     else:
-        print(f"\n*** Secure Mode: API Key protection enabled. ***\n")
+        logger.info("Secure Mode: API Key protection enabled.")
 
-    MODELS = None
-    if not os.getenv("MODELS"):
-        print(f"\n!!! WARNING: MODELS not set")
-        sys.exit(0)
-    else:
-        MODELS = os.getenv("MODELS")
-    
-    print(f"\n!!! WARNING: eval {MODELS}") 
+    # 2. Load Models Configuration
+    models_env = os.getenv("MODELS")
+    if not models_env:
+        logger.error("MODELS environment variable not set. Exiting.")
+        sys.exit(1)
+
     try:
-        MODELS = eval(MODELS)
-    except:
-        print(f"\n!!! WARNING: eval {MODELS} failed")        
-        sys.exit(0)
+        # SECURITY FIX: Use json.loads instead of eval
+        models_config = json.loads(models_env)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse MODELS JSON: {e}")
+        sys.exit(1)
 
-    print(f"\n*** Load {MODELS}. ***\n")
-    for k,v in MODELS.items():
-        print(f"Mapping {k}-->{v}")
-        if "supertonic" == v:
-            engine[k] = supertonic_model.StreamingEngine(f"{k}-->{v}")
-        if "kokoro" == v:
-            engine[k] = kokoro_model.StreamingEngine(f"{k}-->{v}")
+    # 3. Initialize Engines
+    logger.info(f"Loading models configuration: {models_config}")
+    
+    for model_id, backend_type in models_config.items():
+        if backend_type not in MODEL_FACTORIES:
+            logger.error(f"Unknown backend type '{backend_type}' for model '{model_id}'")
+            continue
+
+        try:
+            logger.info(f"Initializing {model_id} -> {backend_type}...")
+            engine_class = MODEL_FACTORIES[backend_type]
+            engines[model_id] = engine_class(f"{model_id}-->{backend_type}")
+        except Exception as e:
+            logger.error(f"Failed to load {model_id}: {e}")
+            # Optional: sys.exit(1) if you want strict startup failure
+
+    if not engines:
+        logger.error("No engines loaded successfully. Exiting.")
+        sys.exit(1)
+
     yield
+    
+    # Cleanup (if needed)
+    engines.clear()
 
+app = FastAPI(lifespan=lifespan, title="Streaming TTS API")
 
-app = FastAPI(lifespan=lifespan)
+# -----------------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------------
 
-
-# PROTECTED ROUTE
-# The Depends(verify_api_key) enforces auth for this specific endpoint
 @app.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
 async def text_to_speech(request: SpeechRequest):
-    global engine
-    if not engine:
-        raise HTTPException(500, "Engine not loaded")
-
-    print(f"request:{request}")
-    format = request.format
-    model = request.model
-    if format not in ["wav", "mp3"]:
-        format = "wav"
-    if model not in engine.keys():
-        print(f"!!!WARNING {model} not found")
-        
-        content = {
-            "ok": False,
-            "message": f"!!!WARNING {model} not found"
-        }
-
-        content = json.dumps(content)
-
-        return Response(content=content, status_code=404,media_type="application/json")
-        
+    global engines
     
+    if not engines:
+        raise HTTPException(status_code=500, detail="No TTS engines loaded")
 
-    return StreamingResponse(
-        engine[model].stream_generator(request.input, request.voice, request.speed, format),
-        media_type=f"audio/{format}"
-    )
+    # Validate Model
+    if request.model not in engines:
+        valid_models = list(engines.keys())
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "message": f"Model '{request.model}' not found. Available: {valid_models}",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found"
+                }
+            }
+        )
 
-@app.get("/v1/models")
+    # Validate Format
+    audio_format = request.format if request.format else "mp3"
+    if audio_format not in ["wav", "mp3"]:
+        audio_format = "wav" # Fallback
+
+    logger.info(f"Generating: model={request.model} voice={request.voice} fmt={audio_format} len={len(request.input)}")
+
+    try:
+        generator = engines[request.model].stream_generator(
+            request.input, 
+            request.voice, 
+            request.speed, 
+            audio_format
+        )
+        
+        return StreamingResponse(
+            generator,
+            media_type=f"audio/{audio_format}"
+        )
+    except Exception as e:
+        logger.error(f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/models", dependencies=[Depends(verify_api_key)])
 async def list_models():
-    return {"data": [{"id": "tts-1", "owned_by": "supertonic"}]}
+    """
+    Returns the list of currently loaded models dynamically.
+    """
+    model_list = []
+    for model_id, engine_inst in engines.items():
+        # Try to get inner name if available, else use backend name
+        owned_by = getattr(engine_inst, "name", "system")
+        model_list.append({
+            "id": model_id,
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": owned_by
+        })
+    
+    return {"object": "list", "data": model_list}
 
+# -----------------------------------------------------------------------------
+# Entry Point
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    # It's better to run uvicorn from CLI, but this supports python app.py
+    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)

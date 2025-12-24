@@ -21,7 +21,7 @@ uv pip install -r ./requirements.txt
 
 ```bash
 export API_KEY=yourapi
-export MODELS="{'tts-2':'supertonic','tts-1':'kokoro'}"
+export MODELS='{"tts-1": "kokoro", "tts-2": "supertonic"}'
 python app.py
 ```
 
