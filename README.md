@@ -21,6 +21,7 @@ uv pip install -r ./requirements.txt
 
 ```bash
 export API_KEY=yourapi
+export MODELS="{'tts-2':'supertonic','tts-1':'kokoro'}"
 python app.py
 ```
 
@@ -29,7 +30,15 @@ python app.py
 ```bash
 curl http://localhost:8000/v1/audio/speech   -H "Content-Type: application/json"  -H "Authorization: Bearer yourapi"  -d '{
     "model": "tts-1",
-    "input": "Hello, this is Supertonic running locally!",
-    "voice": "F1"
+    "input": "Hello World! Come Here!",
+    "voice": "F1",
+    "format": "wav"
   }'   --output ./test.wav
+
+curl http://localhost:8000/v1/audio/speech   -H "Content-Type: application/json"  -H "Authorization: Bearer yourapi"  -d '{
+    "model": "tts-1",
+    "input": "Hello World! Come Here!",
+    "voice": "F1",
+    "format": "mp3"
+  }'   --output ./test.mp3
 ```

@@ -1,3 +1,6 @@
 supertonic
+kokoro
+pip
+lameenc
 uvicorn
 fastapi
